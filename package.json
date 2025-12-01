@@ -1,0 +1,28 @@
+{
+  "name": "bia-scraper",
+  "version": "1.0.0",
+  "description": "BIA.ge business scraper (Node + TypeScript + Playwright + Excel export)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "scrape": "ts-node src/scripts/runScraper.ts"
+  },
+  "keywords": [
+    "scraper",
+    "playwright",
+    "bia.ge"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.0"
+  }
+}
+
+
