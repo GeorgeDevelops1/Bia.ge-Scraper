@@ -79,18 +79,25 @@ export async function scrapeBusinessDetail(
     page.evaluate<StructuredDomData>(() => {
       const labelMap: Record<string, string> = {};
 
-      const collectValue = (container: HTMLElement): string => {
-        const list = container.querySelector<HTMLElement>(".data-list");
-        if (!list) return "";
-
-        if (list.tagName === "UL") {
-          const items = Array.from(
-            list.querySelectorAll<HTMLElement>("li")
-          ).map((li) => li.innerText.trim());
-          return items.join(" | ");
+      const collectValue = (titleNode: HTMLElement): string => {
+        let nextSibling = titleNode.nextElementSibling as HTMLElement | null;
+        while (nextSibling) {
+          if (nextSibling.classList.contains("data-list")) {
+            const list = nextSibling;
+            if (list.tagName === "UL") {
+              const items = Array.from(
+                list.querySelectorAll<HTMLElement>("li")
+              ).map((li) => li.innerText.trim());
+              return items.join(" | ");
+            }
+            return list.innerText.trim();
+          }
+          if (nextSibling.classList.contains("data-title")) {
+            break;
+          }
+          nextSibling = nextSibling.nextElementSibling as HTMLElement | null;
         }
-
-        return list.innerText.trim();
+        return "";
       };
 
       const titleNodes = Array.from(
@@ -100,12 +107,7 @@ export async function scrapeBusinessDetail(
       for (const node of titleNodes) {
         const label = node.innerText.trim();
         if (!label) continue;
-        const container =
-          (node.closest("td") as HTMLElement | null) ||
-          (node.closest("li") as HTMLElement | null) ||
-          (node.parentElement as HTMLElement | null);
-        if (!container) continue;
-        const value = collectValue(container).replace(/\s+/g, " ").trim();
+        const value = collectValue(node).replace(/\s+/g, " ").trim();
         if (!value) continue;
 
         if (labelMap[label]) {
@@ -347,17 +349,24 @@ export async function scrapeBusinessDetail(
     personalId: e.personalId
   }));
 
-  const avgEmployeeAge = parseInteger(
+  let avgEmployeeAge = parseInteger(
     labels["თანამშრომლების საშუალო ასაკი:"]
   );
 
-  let genderDistribution = parseGenderDistribution(
-    labels["გენდერული განაწილება (კაცი):"],
-    labels["გენდერული განაწილება (ქალი):"]
+  const avgAgeMatch = combinedText.match(
+    /თანამშრომლების საშუალო ასაკი:([0-9]+)/
   );
+  if (avgAgeMatch) {
+    const age = parseInt(avgAgeMatch[1], 10);
+    if (!Number.isNaN(age)) {
+      avgEmployeeAge = age;
+    }
+  }
+
+  let genderDistribution: GenderDistribution | null = null;
 
   const genderPercentMatch = combinedText.match(
-    /გენდერული განაწილება \(კაცი\):\s*([0-9]+)%\s*გენდერული განაწილება \(ქალი\):\s*([0-9]+)%/
+    /გენდერული განაწილება \(კაცი\):([0-9]+)%\s*გენდერული განაწილება \(ქალი\):([0-9]+)%/
   );
   if (genderPercentMatch) {
     const male = parseInt(genderPercentMatch[1], 10);
@@ -365,6 +374,27 @@ export async function scrapeBusinessDetail(
     if (!Number.isNaN(male) && !Number.isNaN(female)) {
       genderDistribution = { male, female };
     }
+  } else {
+    const maleMatch = combinedText.match(
+      /გენდერული განაწილება \(კაცი\):([0-9]+)%/
+    );
+    const femaleMatch = combinedText.match(
+      /გენდერული განაწილება \(ქალი\):([0-9]+)%/
+    );
+    if (maleMatch || femaleMatch) {
+      const male = maleMatch ? parseInt(maleMatch[1], 10) : 0;
+      const female = femaleMatch ? parseInt(femaleMatch[1], 10) : 0;
+      if (!Number.isNaN(male) && !Number.isNaN(female) && (male > 0 || female > 0)) {
+        genderDistribution = { male, female };
+      }
+    }
+  }
+
+  if (!genderDistribution) {
+    genderDistribution = parseGenderDistribution(
+      labels["გენდერული განაწილება (კაცი):"],
+      labels["გენდერული განაწილება (ქალი):"]
+    );
   }
 
   const employeeCount = parseInteger(labels["თანამშრომელთა რ-ბა:"]);

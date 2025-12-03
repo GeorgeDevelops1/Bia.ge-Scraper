@@ -4,8 +4,12 @@ import { Page } from "playwright";
 import { ScraperConfig } from "../config/config";
 import { Business } from "../types/Business";
 import { logger } from "../utils/logger";
-import { collectCompanyUrls } from "./listingService";
+import { collectAndScrapeCompanies } from "./listingService";
 import { scrapeBusinessDetail } from "./detailService";
+import {
+  initializeExcelFile,
+  appendBusinessToExcel
+} from "../utils/excelExporter";
 
 interface ScrapeResult {
   businesses: Business[];
@@ -46,36 +50,41 @@ export async function runScraperOnPage(
 ): Promise<ScrapeResult> {
   const checkpointPath = "output/checkpoint.json";
 
-  const companyUrls = await collectCompanyUrls(page, cfg);
-  logger.info(
-    `Total unique company URLs collected: ${companyUrls.length} (maxCompanies=${cfg.maxCompanies})`
-  );
+  await initializeExcelFile(cfg.outputExcelPath);
 
   const businesses: Business[] = [];
   const failedUrls: string[] = [];
-
   let index = 0;
-  for (const url of companyUrls) {
+
+  const onCompanyFound = async (url: string): Promise<void> => {
     index += 1;
     try {
       const biz = await scrapeBusinessDetail(page, url);
       businesses.push(biz);
-      logger.info(
-        `Scraped ${index}/${companyUrls.length} companies (success so far: ${businesses.length})`
-      );
+      await appendBusinessToExcel(biz);
+      
+      if (cfg.detailDelayMs > 0) {
+        await page.waitForTimeout(cfg.detailDelayMs);
+      }
+
+      if (index % cfg.checkpointEvery === 0) {
+        await writeCheckpoint(businesses, failedUrls, checkpointPath);
+      }
     } catch (err) {
-      logger.error(`Failed to scrape ${url}`, err);
       failedUrls.push(url);
+      throw err;
     }
+  };
 
-    if (cfg.detailDelayMs > 0) {
-      await page.waitForTimeout(cfg.detailDelayMs);
-    }
+  const { scraped, failed } = await collectAndScrapeCompanies(
+    page,
+    cfg,
+    onCompanyFound
+  );
 
-    if (index % cfg.checkpointEvery === 0) {
-      await writeCheckpoint(businesses, failedUrls, checkpointPath);
-    }
-  }
+  logger.info(
+    `Scraping finished. Success: ${scraped}, Failed: ${failed}`
+  );
 
   await writeCheckpoint(businesses, failedUrls, checkpointPath);
 

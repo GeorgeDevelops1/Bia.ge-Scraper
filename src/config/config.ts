@@ -17,7 +17,7 @@ export const config: ScraperConfig = {
   searchUrl: "https://www.bia.ge/Company/Search",
   email: "lpetriashvili@euroins.ge",
   password: "petriashvili123",
-  maxCompanies: 6000,
+  maxCompanies: 5,
   pageDelayMs: 1500,
   detailDelayMs: 1000,
   checkpointEvery: 100,
