@@ -150,12 +150,60 @@ export async function collectAndScrapeCompanies(
     }
 
     logger.info("Navigating back to listing page to check for next page...");
-    await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(1500);
+    await page.goto(currentListingPageUrl, { waitUntil: "networkidle" });
+    await page.waitForTimeout(2000);
+    
+    await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
+    
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await page.waitForTimeout(1000);
+    
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+    });
+    await page.waitForTimeout(1000);
+    
+    const totalResults = await page.evaluate(() => {
+      const resultText = document.body.innerText;
+      const match = resultText.match(/(\d+)\s*(შედეგი|result)/i);
+      return match ? parseInt(match[1]) : null;
+    });
+    
+    if (totalResults && totalResults > collected.size) {
+      logger.info(`Found ${totalResults} total results, have ${collected.size}, should have more pages`);
+    }
 
     let nextButton = null;
     
     const findNextButton = async (): Promise<any> => {
+      logger.info("Searching for next page button...");
+      
+      const allClickableElements = await page.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll("a, button, [onclick], [role='button']"));
+        return elements.map(el => ({
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim() || "",
+          href: el.getAttribute("href") || "",
+          onclick: el.getAttribute("onclick") || "",
+          classes: el.className || "",
+          id: el.id || "",
+          innerHTML: el.innerHTML.substring(0, 200)
+        })).filter(el => 
+          el.text.toLowerCase().includes("next") || 
+          el.text.includes("შემდეგი") ||
+          el.href.includes("page") ||
+          el.onclick.includes("page") ||
+          el.classes.toLowerCase().includes("next") ||
+          el.classes.toLowerCase().includes("pagination")
+        );
+      });
+      
+      logger.info(`Found ${allClickableElements.length} potential next buttons`);
+      if (allClickableElements.length > 0) {
+        logger.info(`Sample elements: ${JSON.stringify(allClickableElements.slice(0, 3))}`);
+      }
       try {
         nextButton = await page.$("a[rel='next']");
         if (nextButton) return nextButton;
@@ -239,29 +287,63 @@ export async function collectAndScrapeCompanies(
       
       try {
         const currentPageNum = pageIndex;
-        const allLinks = await page.$$("a, button");
+        const nextPageNum = currentPageNum + 1;
+        
+        const allLinks = await page.$$("a, button, [onclick], [role='button'], span[onclick], div[onclick]");
+        logger.info(`Checking ${allLinks.length} clickable elements for next page (page ${nextPageNum})...`);
+        
         for (const link of allLinks) {
           const href = await link.getAttribute("href");
           const text = await link.textContent();
+          const onclick = await link.getAttribute("onclick");
+          const classes = await link.getAttribute("class") || "";
+          const id = await link.getAttribute("id") || "";
+          
+          const isVisible = await link.evaluate((el) => {
+            if (!(el instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(el);
+            return style.display !== "none" && style.visibility !== "hidden" && el.offsetParent !== null;
+          });
+          
+          if (!isVisible) continue;
+          
+          if (text && (text.trim() === "შემდეგი" || text.trim().toLowerCase() === "next" || text.trim() === "»" || text.trim() === "→")) {
+            logger.info(`Found next button by text: "${text.trim()}"`);
+            return link;
+          }
+          
+          if (text && text.trim() === String(nextPageNum)) {
+            const parent = await link.evaluateHandle((el) => el.closest(".pagination, .pager, nav, [class*='page']"));
+            if (parent) {
+              logger.info(`Found page ${nextPageNum} link`);
+              return link;
+            }
+          }
           
           if (href && (href.includes("page=") || href.includes("Page="))) {
             const pageMatch = href.match(/[Pp]age[=_](\d+)/);
             if (pageMatch) {
               const linkPageNum = parseInt(pageMatch[1]);
-              if (linkPageNum === currentPageNum + 1) {
+              if (linkPageNum === nextPageNum) {
+                logger.info(`Found next page link by href: ${href}`);
                 return link;
               }
             }
           }
           
-          if (text && /^\d+$/.test(text.trim())) {
-            const linkPageNum = parseInt(text.trim());
-            if (linkPageNum === currentPageNum + 1) {
-              return link;
-            }
+          if (onclick && (onclick.includes(`page=${nextPageNum}`) || onclick.includes(`Page=${nextPageNum}`) || onclick.includes(`page:${nextPageNum}`))) {
+            logger.info(`Found next page link by onclick: ${onclick.substring(0, 100)}`);
+            return link;
+          }
+          
+          if ((classes.toLowerCase().includes("next") || id.toLowerCase().includes("next")) && !classes.toLowerCase().includes("disabled")) {
+            logger.info(`Found next button by class/id: ${classes} ${id}`);
+            return link;
           }
         }
-      } catch {}
+      } catch (err) {
+        logger.warn(`Error searching for next button: ${err}`);
+      }
       
       return null;
     };
