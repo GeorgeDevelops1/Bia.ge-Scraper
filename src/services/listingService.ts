@@ -94,9 +94,15 @@ export async function collectAndScrapeCompanies(
   let pageIndex = 1;
   let scrapedCount = 0;
   let failedCount = 0;
+  let currentListingPageUrl = page.url();
 
   while (true) {
     logger.info(`Collecting company URLs from listing page #${pageIndex}...`);
+    
+    if (page.url() !== currentListingPageUrl && !page.url().includes("/Company/")) {
+      await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(1000);
+    }
 
     const urlsOnPage = await page
       .$$eval("li.row-box a.title-box", (anchors) =>
@@ -143,10 +149,124 @@ export async function collectAndScrapeCompanies(
       break;
     }
 
-    const nextButton =
-      (await page.$("a[rel='next']")) ??
-      (await page.$(".pagination a.next")) ??
-      (await page.$("text=შემდეგი"));
+    logger.info("Navigating back to listing page to check for next page...");
+    await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1500);
+
+    let nextButton = null;
+    
+    const findNextButton = async (): Promise<any> => {
+      try {
+        nextButton = await page.$("a[rel='next']");
+        if (nextButton) return nextButton;
+      } catch {}
+      
+      try {
+        const locator = page.locator("a:has-text('შემდეგი')").first();
+        if (await locator.count() > 0) {
+          nextButton = await locator.elementHandle();
+          if (nextButton) return nextButton;
+        }
+      } catch {}
+      
+      try {
+        const locator = page.locator(".pagination a.next, .pager a.next, a.next").first();
+        if (await locator.count() > 0) {
+          nextButton = await locator.elementHandle();
+          if (nextButton) return nextButton;
+        }
+      } catch {}
+      
+      try {
+        const allLinks = await page.$$("a");
+        for (const link of allLinks) {
+          const text = await link.textContent();
+          if (text && (text.trim() === "შემდეგი" || text.trim().toLowerCase() === "next")) {
+            return link;
+          }
+        }
+      } catch {}
+      
+      try {
+        const paginationSelectors = [
+          ".pagination", ".pager", "[class*='pagination']", "[class*='pager']",
+          "[class*='Pagination']", "[class*='Pager']", "nav", "[role='navigation']"
+        ];
+        
+        for (const selector of paginationSelectors) {
+          const container = await page.$(selector);
+          if (container) {
+            const links = await container.$$("a, button");
+            for (const link of links) {
+              const text = await link.textContent();
+              const href = await link.getAttribute("href");
+              const tagName = await link.evaluate((el) => el.tagName.toLowerCase());
+              
+              const isActive = await link.evaluate((el) => {
+                return el.classList.contains("active") || 
+                       el.classList.contains("current") ||
+                       el.classList.contains("disabled") ||
+                       el.getAttribute("aria-current") === "page" ||
+                       el.getAttribute("aria-disabled") === "true";
+              });
+              
+              if (isActive) continue;
+              
+              if (text && (text.includes("შემდეგი") || text.trim().toLowerCase().includes("next"))) {
+                return link;
+              }
+              
+              if (href) {
+                const pageMatch = href.match(/[Pp]age[=_](\d+)/);
+                if (pageMatch) {
+                  const linkPageNum = parseInt(pageMatch[1]);
+                  if (linkPageNum === pageIndex + 1) {
+                    return link;
+                  }
+                }
+              }
+              
+              if (text && /^\d+$/.test(text.trim())) {
+                const linkPageNum = parseInt(text.trim());
+                if (linkPageNum === pageIndex + 1) {
+                  return link;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+      
+      try {
+        const currentPageNum = pageIndex;
+        const allLinks = await page.$$("a, button");
+        for (const link of allLinks) {
+          const href = await link.getAttribute("href");
+          const text = await link.textContent();
+          
+          if (href && (href.includes("page=") || href.includes("Page="))) {
+            const pageMatch = href.match(/[Pp]age[=_](\d+)/);
+            if (pageMatch) {
+              const linkPageNum = parseInt(pageMatch[1]);
+              if (linkPageNum === currentPageNum + 1) {
+                return link;
+              }
+            }
+          }
+          
+          if (text && /^\d+$/.test(text.trim())) {
+            const linkPageNum = parseInt(text.trim());
+            if (linkPageNum === currentPageNum + 1) {
+              return link;
+            }
+          }
+        }
+      } catch {}
+      
+      return null;
+    };
+    
+    nextButton = await findNextButton();
 
     if (!nextButton) {
       logger.info(
@@ -158,9 +278,11 @@ export async function collectAndScrapeCompanies(
     pageIndex += 1;
     logger.info(`Clicking next page (page #${pageIndex})...`);
     await Promise.all([
-      page.waitForLoadState("networkidle"),
+      page.waitForNavigation({ waitUntil: "networkidle", timeout: 30000 }),
       nextButton.click()
     ]);
+    
+    currentListingPageUrl = page.url();
 
     if (cfg.pageDelayMs > 0) {
       await page.waitForTimeout(cfg.pageDelayMs);
