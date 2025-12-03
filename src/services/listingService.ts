@@ -104,6 +104,72 @@ export async function collectAndScrapeCompanies(
       await page.waitForTimeout(1000);
     }
 
+    await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
+    
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await page.waitForTimeout(1000);
+    
+    await page.waitForSelector(".manipulations, .form-button-paging", { timeout: 5000 }).catch(() => {});
+
+    logger.info("Checking for next page button before scraping companies...");
+    
+    let hasNextPage = false;
+    let nextPageClickHandler: string | null = null;
+    
+    const nextButtonLocator = page.locator("div.form-button-paging.button-next").first();
+    const nextButtonCount = await nextButtonLocator.count();
+    
+    if (nextButtonCount > 0) {
+      const isVisible = await nextButtonLocator.isVisible().catch(() => false);
+      const isDisabled = await nextButtonLocator.evaluate((el) => {
+        return el.classList.contains("disabled") || 
+               el.getAttribute("aria-disabled") === "true" ||
+               (el as HTMLElement).style.pointerEvents === "none" ||
+               (el as HTMLElement).style.display === "none";
+      }).catch(() => false);
+      
+      if (isVisible && !isDisabled) {
+        hasNextPage = true;
+        const buttonText = await nextButtonLocator.textContent().catch(() => "");
+        logger.info(`Found next button with text: "${buttonText?.trim()}"`);
+        
+        nextPageClickHandler = await nextButtonLocator.evaluate((el) => {
+          return (el as HTMLElement).getAttribute("onclick") || 
+                 (el as HTMLElement).getAttribute("data-url") ||
+                 null;
+        }).catch(() => null);
+      }
+    }
+    
+    if (!hasNextPage) {
+      const alternativeLocator = page.locator(".form-button-paging").filter({ hasText: "შემდეგი" }).first();
+      const altCount = await alternativeLocator.count();
+      
+      if (altCount > 0) {
+        const isVisible = await alternativeLocator.isVisible().catch(() => false);
+        const isDisabled = await alternativeLocator.evaluate((el) => {
+          return el.classList.contains("disabled") || 
+                 el.getAttribute("aria-disabled") === "true" ||
+                 (el as HTMLElement).style.pointerEvents === "none" ||
+                 (el as HTMLElement).style.display === "none";
+        }).catch(() => false);
+        
+        if (isVisible && !isDisabled) {
+          hasNextPage = true;
+          const buttonText = await alternativeLocator.textContent().catch(() => "");
+          logger.info(`Found next button (alternative) with text: "${buttonText?.trim()}"`);
+          
+          nextPageClickHandler = await alternativeLocator.evaluate((el) => {
+            return (el as HTMLElement).getAttribute("onclick") || 
+                   (el as HTMLElement).getAttribute("data-url") ||
+                   null;
+          }).catch(() => null);
+        }
+      }
+    }
+
     const urlsOnPage = await page
       .$$eval("li.row-box a.title-box", (anchors) =>
         anchors
@@ -149,220 +215,97 @@ export async function collectAndScrapeCompanies(
       break;
     }
 
-    logger.info("Navigating back to listing page to check for next page...");
-    await page.goto(currentListingPageUrl, { waitUntil: "networkidle" });
-    await page.waitForTimeout(2000);
-    
-    await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
-    
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
-    await page.waitForTimeout(1000);
-    
-    await page.evaluate(() => {
-      window.scrollTo(0, 0);
-    });
-    await page.waitForTimeout(1000);
-    
-    const totalResults = await page.evaluate(() => {
-      const resultText = document.body.innerText;
-      const match = resultText.match(/(\d+)\s*(შედეგი|result)/i);
-      return match ? parseInt(match[1]) : null;
-    });
-    
-    if (totalResults && totalResults > collected.size) {
-      logger.info(`Found ${totalResults} total results, have ${collected.size}, should have more pages`);
-    }
-
-    let nextButton = null;
-    
-    const findNextButton = async (): Promise<any> => {
-      logger.info("Searching for next page button...");
-      
-      const allClickableElements = await page.evaluate(() => {
-        const elements = Array.from(document.querySelectorAll("a, button, [onclick], [role='button']"));
-        return elements.map(el => ({
-          tag: el.tagName.toLowerCase(),
-          text: el.textContent?.trim() || "",
-          href: el.getAttribute("href") || "",
-          onclick: el.getAttribute("onclick") || "",
-          classes: el.className || "",
-          id: el.id || "",
-          innerHTML: el.innerHTML.substring(0, 200)
-        })).filter(el => 
-          el.text.toLowerCase().includes("next") || 
-          el.text.includes("შემდეგი") ||
-          el.href.includes("page") ||
-          el.onclick.includes("page") ||
-          el.classes.toLowerCase().includes("next") ||
-          el.classes.toLowerCase().includes("pagination")
-        );
-      });
-      
-      logger.info(`Found ${allClickableElements.length} potential next buttons`);
-      if (allClickableElements.length > 0) {
-        logger.info(`Sample elements: ${JSON.stringify(allClickableElements.slice(0, 3))}`);
-      }
-      try {
-        nextButton = await page.$("a[rel='next']");
-        if (nextButton) return nextButton;
-      } catch {}
-      
-      try {
-        const locator = page.locator("a:has-text('შემდეგი')").first();
-        if (await locator.count() > 0) {
-          nextButton = await locator.elementHandle();
-          if (nextButton) return nextButton;
-        }
-      } catch {}
-      
-      try {
-        const locator = page.locator(".pagination a.next, .pager a.next, a.next").first();
-        if (await locator.count() > 0) {
-          nextButton = await locator.elementHandle();
-          if (nextButton) return nextButton;
-        }
-      } catch {}
-      
-      try {
-        const allLinks = await page.$$("a");
-        for (const link of allLinks) {
-          const text = await link.textContent();
-          if (text && (text.trim() === "შემდეგი" || text.trim().toLowerCase() === "next")) {
-            return link;
-          }
-        }
-      } catch {}
-      
-      try {
-        const paginationSelectors = [
-          ".pagination", ".pager", "[class*='pagination']", "[class*='pager']",
-          "[class*='Pagination']", "[class*='Pager']", "nav", "[role='navigation']"
-        ];
-        
-        for (const selector of paginationSelectors) {
-          const container = await page.$(selector);
-          if (container) {
-            const links = await container.$$("a, button");
-            for (const link of links) {
-              const text = await link.textContent();
-              const href = await link.getAttribute("href");
-              const tagName = await link.evaluate((el) => el.tagName.toLowerCase());
-              
-              const isActive = await link.evaluate((el) => {
-                return el.classList.contains("active") || 
-                       el.classList.contains("current") ||
-                       el.classList.contains("disabled") ||
-                       el.getAttribute("aria-current") === "page" ||
-                       el.getAttribute("aria-disabled") === "true";
-              });
-              
-              if (isActive) continue;
-              
-              if (text && (text.includes("შემდეგი") || text.trim().toLowerCase().includes("next"))) {
-                return link;
-              }
-              
-              if (href) {
-                const pageMatch = href.match(/[Pp]age[=_](\d+)/);
-                if (pageMatch) {
-                  const linkPageNum = parseInt(pageMatch[1]);
-                  if (linkPageNum === pageIndex + 1) {
-                    return link;
-                  }
-                }
-              }
-              
-              if (text && /^\d+$/.test(text.trim())) {
-                const linkPageNum = parseInt(text.trim());
-                if (linkPageNum === pageIndex + 1) {
-                  return link;
-                }
-              }
-            }
-          }
-        }
-      } catch {}
-      
-      try {
-        const currentPageNum = pageIndex;
-        const nextPageNum = currentPageNum + 1;
-        
-        const allLinks = await page.$$("a, button, [onclick], [role='button'], span[onclick], div[onclick]");
-        logger.info(`Checking ${allLinks.length} clickable elements for next page (page ${nextPageNum})...`);
-        
-        for (const link of allLinks) {
-          const href = await link.getAttribute("href");
-          const text = await link.textContent();
-          const onclick = await link.getAttribute("onclick");
-          const classes = await link.getAttribute("class") || "";
-          const id = await link.getAttribute("id") || "";
-          
-          const isVisible = await link.evaluate((el) => {
-            if (!(el instanceof HTMLElement)) return false;
-            const style = window.getComputedStyle(el);
-            return style.display !== "none" && style.visibility !== "hidden" && el.offsetParent !== null;
-          });
-          
-          if (!isVisible) continue;
-          
-          if (text && (text.trim() === "შემდეგი" || text.trim().toLowerCase() === "next" || text.trim() === "»" || text.trim() === "→")) {
-            logger.info(`Found next button by text: "${text.trim()}"`);
-            return link;
-          }
-          
-          if (text && text.trim() === String(nextPageNum)) {
-            const parent = await link.evaluateHandle((el) => el.closest(".pagination, .pager, nav, [class*='page']"));
-            if (parent) {
-              logger.info(`Found page ${nextPageNum} link`);
-              return link;
-            }
-          }
-          
-          if (href && (href.includes("page=") || href.includes("Page="))) {
-            const pageMatch = href.match(/[Pp]age[=_](\d+)/);
-            if (pageMatch) {
-              const linkPageNum = parseInt(pageMatch[1]);
-              if (linkPageNum === nextPageNum) {
-                logger.info(`Found next page link by href: ${href}`);
-                return link;
-              }
-            }
-          }
-          
-          if (onclick && (onclick.includes(`page=${nextPageNum}`) || onclick.includes(`Page=${nextPageNum}`) || onclick.includes(`page:${nextPageNum}`))) {
-            logger.info(`Found next page link by onclick: ${onclick.substring(0, 100)}`);
-            return link;
-          }
-          
-          if ((classes.toLowerCase().includes("next") || id.toLowerCase().includes("next")) && !classes.toLowerCase().includes("disabled")) {
-            logger.info(`Found next button by class/id: ${classes} ${id}`);
-            return link;
-          }
-        }
-      } catch (err) {
-        logger.warn(`Error searching for next button: ${err}`);
-      }
-      
-      return null;
-    };
-    
-    nextButton = await findNextButton();
-
-    if (!nextButton) {
-      logger.info(
-        "No next page button found. Assuming this is the last listing page."
-      );
+    if (!hasNextPage) {
+      logger.info("No next page button found. Assuming this is the last listing page.");
       break;
     }
 
     pageIndex += 1;
-    logger.info(`Clicking next page (page #${pageIndex})...`);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle", timeout: 30000 }),
-      nextButton.click()
-    ]);
+    logger.info(`Navigating to next page (page #${pageIndex})...`);
+    
+    if (nextPageClickHandler) {
+      logger.info(`Using stored click handler: ${nextPageClickHandler.substring(0, 100)}`);
+      await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(2000);
+      await page.evaluate((handler) => {
+        if (handler) {
+          try {
+            eval(handler);
+          } catch (e) {
+            const btn = document.querySelector("div.form-button-paging.button-next") as HTMLElement;
+            if (btn) btn.click();
+          }
+        }
+      }, nextPageClickHandler);
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    } else {
+      logger.info("Navigating back to listing page to click next page...");
+      await page.goto(currentListingPageUrl, { waitUntil: "networkidle" });
+      await page.waitForTimeout(3000);
+      
+      await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
+      
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await page.waitForTimeout(2000);
+      
+      const pageNumberUpdated = await page.evaluate((nextPageNum) => {
+        const pageInput = document.querySelector('input.field-page-number[name*="PageNumber"]') as HTMLInputElement;
+        if (pageInput) {
+          pageInput.value = String(nextPageNum);
+          pageInput.dispatchEvent(new Event('change', { bubbles: true }));
+          const goButton = pageInput.closest('.paging-info')?.querySelector('input[type="button"][value="GO"]') as HTMLElement;
+          if (goButton) {
+            goButton.click();
+            return true;
+          }
+        }
+        return false;
+      }, pageIndex);
+      
+      if (pageNumberUpdated) {
+        logger.info("Updated page number and clicked GO button");
+        await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+      } else {
+        for (let retry = 0; retry < 3; retry++) {
+          await page.waitForSelector(".manipulations, .form-button-paging", { timeout: 5000 }).catch(() => {});
+          
+          const clicked = await page.evaluate(() => {
+            const nextBtn = document.querySelector("div.form-button-paging.button-next") as HTMLElement;
+            if (nextBtn && nextBtn.offsetParent !== null && !nextBtn.classList.contains("disabled")) {
+              nextBtn.click();
+              return true;
+            }
+            
+            const allButtons = Array.from(document.querySelectorAll(".form-button-paging"));
+            for (const btn of allButtons) {
+              const btnEl = btn as HTMLElement;
+              if (btn.textContent?.trim() === "შემდეგი" && btnEl.offsetParent !== null && !btnEl.classList.contains("disabled")) {
+                btnEl.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          
+          if (clicked) {
+            await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+            await page.waitForTimeout(1000);
+            break;
+          }
+          
+          if (retry < 2) {
+            logger.info(`Retry ${retry + 1}/3: Waiting longer for pagination to load...`);
+            await page.waitForTimeout(2000);
+          } else {
+            logger.info("Could not find or click next button after 3 retries. Stopping.");
+            break;
+          }
+        }
+      }
+    }
     
     currentListingPageUrl = page.url();
 
