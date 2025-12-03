@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { Page } from "playwright";
+import { Page, BrowserContext } from "playwright";
 import { ScraperConfig } from "../config/config";
 import { Business } from "../types/Business";
 import { logger } from "../utils/logger";
@@ -46,6 +46,7 @@ async function writeCheckpoint(
 
 export async function runScraperOnPage(
   page: Page,
+  context: BrowserContext,
   cfg: ScraperConfig
 ): Promise<ScrapeResult> {
   const checkpointPath = "output/checkpoint.json";
@@ -58,13 +59,19 @@ export async function runScraperOnPage(
 
   const onCompanyFound = async (url: string): Promise<void> => {
     index += 1;
+    let detailPage: Page | null = null;
     try {
-      const biz = await scrapeBusinessDetail(page, url);
+      logger.info(`Opening company in new tab: ${url}`);
+      detailPage = await context.newPage();
+      await detailPage.goto(url, { waitUntil: "domcontentloaded" });
+      await detailPage.waitForTimeout(500);
+      
+      const biz = await scrapeBusinessDetail(detailPage, url);
       businesses.push(biz);
       await appendBusinessToExcel(biz);
       
       if (cfg.detailDelayMs > 0) {
-        await page.waitForTimeout(cfg.detailDelayMs);
+        await detailPage.waitForTimeout(cfg.detailDelayMs);
       }
 
       if (index % cfg.checkpointEvery === 0) {
@@ -73,6 +80,11 @@ export async function runScraperOnPage(
     } catch (err) {
       failedUrls.push(url);
       throw err;
+    } finally {
+      if (detailPage) {
+        await detailPage.close();
+        logger.info(`Closed detail tab for: ${url}`);
+      }
     }
   };
 

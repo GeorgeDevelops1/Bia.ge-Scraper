@@ -6,10 +6,10 @@ import { runScraperOnPage } from "../services/scraperService";
 async function main(): Promise<void> {
   logger.info("Starting BIA.ge scraper...");
 
-  const { browser, page } = await createAuthenticatedContext(config);
+  const { browser, context, page } = await createAuthenticatedContext(config);
 
   try {
-    const { businesses, failedUrls } = await runScraperOnPage(page, config);
+    const { businesses, failedUrls } = await runScraperOnPage(page, context, config);
 
     logger.info(
       `Scraping finished. Success: ${businesses.length}, Failed: ${failedUrls.length}`

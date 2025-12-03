@@ -221,90 +221,58 @@ export async function collectAndScrapeCompanies(
     }
 
     pageIndex += 1;
-    logger.info(`Navigating to next page (page #${pageIndex})...`);
+    logger.info(`Clicking next page button (page #${pageIndex})...`);
     
-    if (nextPageClickHandler) {
-      logger.info(`Using stored click handler: ${nextPageClickHandler.substring(0, 100)}`);
-      await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(2000);
-      await page.evaluate((handler) => {
-        if (handler) {
-          try {
-            eval(handler);
-          } catch (e) {
-            const btn = document.querySelector("div.form-button-paging.button-next") as HTMLElement;
-            if (btn) btn.click();
-          }
-        }
-      }, nextPageClickHandler);
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-    } else {
-      logger.info("Navigating back to listing page to click next page...");
-      await page.goto(currentListingPageUrl, { waitUntil: "networkidle" });
-      await page.waitForTimeout(3000);
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await page.waitForTimeout(500);
+    
+    const clicked = await page.evaluate(() => {
+      const nextBtn = document.querySelector("div.form-button-paging.button-next") as HTMLElement;
+      if (nextBtn && nextBtn.offsetParent !== null && !nextBtn.classList.contains("disabled")) {
+        nextBtn.click();
+        return true;
+      }
       
-      await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
-      
-      await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-      });
-      await page.waitForTimeout(2000);
-      
-      const pageNumberUpdated = await page.evaluate((nextPageNum) => {
-        const pageInput = document.querySelector('input.field-page-number[name*="PageNumber"]') as HTMLInputElement;
-        if (pageInput) {
-          pageInput.value = String(nextPageNum);
-          pageInput.dispatchEvent(new Event('change', { bubbles: true }));
-          const goButton = pageInput.closest('.paging-info')?.querySelector('input[type="button"][value="GO"]') as HTMLElement;
-          if (goButton) {
-            goButton.click();
-            return true;
-          }
-        }
-        return false;
-      }, pageIndex);
-      
-      if (pageNumberUpdated) {
-        logger.info("Updated page number and clicked GO button");
-        await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-        await page.waitForTimeout(1000);
-      } else {
-        for (let retry = 0; retry < 3; retry++) {
-          await page.waitForSelector(".manipulations, .form-button-paging", { timeout: 5000 }).catch(() => {});
-          
-          const clicked = await page.evaluate(() => {
-            const nextBtn = document.querySelector("div.form-button-paging.button-next") as HTMLElement;
-            if (nextBtn && nextBtn.offsetParent !== null && !nextBtn.classList.contains("disabled")) {
-              nextBtn.click();
-              return true;
-            }
-            
-            const allButtons = Array.from(document.querySelectorAll(".form-button-paging"));
-            for (const btn of allButtons) {
-              const btnEl = btn as HTMLElement;
-              if (btn.textContent?.trim() === "შემდეგი" && btnEl.offsetParent !== null && !btnEl.classList.contains("disabled")) {
-                btnEl.click();
-                return true;
-              }
-            }
-            return false;
-          });
-          
-          if (clicked) {
-            await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-            await page.waitForTimeout(1000);
-            break;
-          }
-          
-          if (retry < 2) {
-            logger.info(`Retry ${retry + 1}/3: Waiting longer for pagination to load...`);
-            await page.waitForTimeout(2000);
-          } else {
-            logger.info("Could not find or click next button after 3 retries. Stopping.");
-            break;
-          }
+      const allButtons = Array.from(document.querySelectorAll(".form-button-paging"));
+      for (const btn of allButtons) {
+        const btnEl = btn as HTMLElement;
+        if (btn.textContent?.trim() === "შემდეგი" && btnEl.offsetParent !== null && !btnEl.classList.contains("disabled")) {
+          btnEl.click();
+          return true;
         }
       }
+      return false;
+    });
+    
+    if (!clicked) {
+      logger.info("Could not click next button via JavaScript. Trying locator...");
+      const nextBtnLocator = page.locator("div.form-button-paging.button-next").first();
+      if (await nextBtnLocator.count() > 0) {
+        await nextBtnLocator.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(500);
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
+          nextBtnLocator.click()
+        ]);
+      } else {
+        const altBtnLocator = page.locator(".form-button-paging").filter({ hasText: "შემდეგი" }).first();
+        if (await altBtnLocator.count() > 0) {
+          await altBtnLocator.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(500);
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
+            altBtnLocator.click()
+          ]);
+        } else {
+          logger.info("Could not find next button. Stopping.");
+          break;
+        }
+      }
+    } else {
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.waitForTimeout(1000);
     }
     
     currentListingPageUrl = page.url();
