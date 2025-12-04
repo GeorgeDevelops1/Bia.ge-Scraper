@@ -68,10 +68,17 @@ export async function collectAndScrapeCompanies(
   await searchButtonLocator.waitFor({ state: "visible", timeout: 10000 });
   await searchButtonLocator.scrollIntoViewIfNeeded();
   
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "networkidle", timeout: 30000 }),
-    searchButtonLocator.click()
-  ]);
+  try {
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle", timeout: 30000 }),
+      searchButtonLocator.click()
+    ]);
+  } catch (err) {
+    logger.error(
+      "Timeout or error while waiting for navigation after clicking Search. Continuing with current page.",
+      err
+    );
+  }
 
   const currentUrl = page.url();
   logger.info(`Navigated to: ${currentUrl}`);
@@ -94,15 +101,50 @@ export async function collectAndScrapeCompanies(
   let pageIndex = 1;
   let scrapedCount = 0;
   let failedCount = 0;
-  let currentListingPageUrl = page.url();
+
+  // თუ startPage დამაყენებული მაქვს, პირდაპირ იმ გვერდზე გადავხტე page-number input + GO-ს გამოყენებით
+  if (cfg.startPage && cfg.startPage > 1) {
+    logger.info(`Jumping to start page #${cfg.startPage}...`);
+    try {
+      const pageNumberInput = page.locator(
+        'input.field-page-number[name="CompaniesElements.Filters.PageNumber"]'
+      );
+      await pageNumberInput.waitFor({ state: "visible", timeout: 10000 });
+      await pageNumberInput.fill(String(cfg.startPage));
+
+      const goButton = page.locator('input[type="button"][value="GO"]').first();
+      await goButton.waitFor({ state: "visible", timeout: 10000 });
+
+      try {
+        await Promise.all([
+          page.waitForNavigation({
+            waitUntil: "domcontentloaded",
+            timeout: 30000
+          }),
+          goButton.click()
+        ]);
+      } catch (err) {
+        logger.error(
+          "Timeout or error while waiting for navigation after clicking GO. Continuing with whatever page loaded.",
+          err
+        );
+      }
+
+      pageIndex = cfg.startPage;
+      logger.info(
+        `Now on requested start page #${pageIndex}. Current URL: ${page.url()}`
+      );
+    } catch (err) {
+      logger.error(
+        `Failed to jump to requested start page ${cfg.startPage}. Continuing from page #1 instead.`,
+        err
+      );
+      pageIndex = 1;
+    }
+  }
 
   while (true) {
     logger.info(`Collecting company URLs from listing page #${pageIndex}...`);
-    
-    if (page.url() !== currentListingPageUrl && !page.url().includes("/Company/")) {
-      await page.goto(currentListingPageUrl, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(1000);
-    }
 
     await page.waitForSelector("li.row-box", { timeout: 10000 }).catch(() => {});
     
@@ -252,31 +294,59 @@ export async function collectAndScrapeCompanies(
       if (await nextBtnLocator.count() > 0) {
         await nextBtnLocator.scrollIntoViewIfNeeded();
         await page.waitForTimeout(500);
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
-          nextBtnLocator.click()
-        ]);
+        try {
+          await Promise.all([
+            page.waitForNavigation({
+              waitUntil: "domcontentloaded",
+              timeout: 30000
+            }),
+            nextBtnLocator.click()
+          ]);
+        } catch (err) {
+          logger.error(
+            "Timeout or error while waiting for navigation after clicking next (locator).",
+            err
+          );
+        }
       } else {
         const altBtnLocator = page.locator(".form-button-paging").filter({ hasText: "შემდეგი" }).first();
         if (await altBtnLocator.count() > 0) {
           await altBtnLocator.scrollIntoViewIfNeeded();
           await page.waitForTimeout(500);
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
-            altBtnLocator.click()
-          ]);
+          try {
+            await Promise.all([
+              page.waitForNavigation({
+                waitUntil: "domcontentloaded",
+                timeout: 30000
+              }),
+              altBtnLocator.click()
+            ]);
+          } catch (err) {
+            logger.error(
+              "Timeout or error while waiting for navigation after clicking next (alt locator).",
+              err
+            );
+          }
         } else {
           logger.info("Could not find next button. Stopping.");
           break;
         }
       }
     } else {
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 });
+      try {
+        await page.waitForNavigation({
+          waitUntil: "domcontentloaded",
+          timeout: 30000
+        });
+      } catch (err) {
+        logger.error(
+          "Timeout or error while waiting for navigation after clicking next (JS click).",
+          err
+        );
+      }
       await page.waitForTimeout(1000);
     }
     
-    currentListingPageUrl = page.url();
-
     if (cfg.pageDelayMs > 0) {
       await page.waitForTimeout(cfg.pageDelayMs);
     }

@@ -6,10 +6,11 @@ import { Business } from "../types/Business";
 import { logger } from "../utils/logger";
 import { collectAndScrapeCompanies } from "./listingService";
 import { scrapeBusinessDetail } from "./detailService";
+import { exportBusinessesToExcel } from "../utils/excelExporter";
 import {
-  initializeExcelFile,
-  appendBusinessToExcel
-} from "../utils/excelExporter";
+  appendBusinessToJson,
+  readAllBusinessesFromJson
+} from "../utils/jsonStore";
 
 interface ScrapeResult {
   businesses: Business[];
@@ -50,8 +51,7 @@ export async function runScraperOnPage(
   cfg: ScraperConfig
 ): Promise<ScrapeResult> {
   const checkpointPath = "output/checkpoint.json";
-
-  await initializeExcelFile(cfg.outputExcelPath);
+  const jsonStorePath = "output/bia_companies.json";
 
   const businesses: Business[] = [];
   const failedUrls: string[] = [];
@@ -68,7 +68,7 @@ export async function runScraperOnPage(
       
       const biz = await scrapeBusinessDetail(detailPage, url);
       businesses.push(biz);
-      await appendBusinessToExcel(biz);
+      await appendBusinessToJson(biz, jsonStorePath);
       
       if (cfg.detailDelayMs > 0) {
         await detailPage.waitForTimeout(cfg.detailDelayMs);
@@ -99,6 +99,12 @@ export async function runScraperOnPage(
   );
 
   await writeCheckpoint(businesses, failedUrls, checkpointPath);
+
+  // Excel-ს ვაგენერირებთ მთლიანი JSON store-დან, რომ ყოველთვის კონსისტენტური იყოს
+  const allBusinesses = await readAllBusinessesFromJson(jsonStorePath);
+  if (allBusinesses.length > 0) {
+    await exportBusinessesToExcel(allBusinesses, cfg.outputExcelPath);
+  }
 
   return { businesses, failedUrls };
 }

@@ -302,16 +302,18 @@ function formatBusinessRow(biz: Business) {
 }
 
 export async function initializeExcelFile(filePath: string): Promise<void> {
-  if (workbook && worksheet && outputPath === filePath) {
-    logger.warn(`Excel file already initialized at ${filePath}`);
-    return;
-  }
-
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
+  if (fs.existsSync(filePath)) {
+    outputPath = filePath;
+    logger.info(`Loaded existing Excel file at ${filePath} for appending`);
+    return;
+  }
+
+  // თუ ფაილი არ არსებობს, ახალი excel შევქმნა სათაურებით
   workbook = new ExcelJS.Workbook();
   worksheet = workbook.addWorksheet("Companies");
   outputPath = filePath;
@@ -351,17 +353,67 @@ export async function initializeExcelFile(filePath: string): Promise<void> {
 }
 
 export async function appendBusinessToExcel(biz: Business): Promise<void> {
-  if (!workbook || !worksheet || !outputPath) {
+  if (!outputPath) {
     throw new Error(
       "Excel file not initialized. Call initializeExcelFile() first."
     );
   }
 
+  const localWorkbook = new ExcelJS.Workbook();
+
+  if (fs.existsSync(outputPath)) {
+    await localWorkbook.xlsx.readFile(outputPath);
+  }
+
+  let ws =
+    localWorkbook.getWorksheet("Companies") || localWorkbook.worksheets[0];
+
+  if (!ws) {
+    // completely new workbook (case: file did not exist, but initializeExcelFile was not called for some reason)
+    ws = localWorkbook.addWorksheet("Companies");
+    const columns = getStandardColumns();
+    ws.columns = columns;
+
+    const georgianHeaderRowValues = ws.columns.map((col) => {
+      const header = col.header as string | undefined;
+      if (!header) return "";
+      return georgianHeaderByEnglish[header] ?? "";
+    });
+
+    ws.insertRow(2, georgianHeaderRowValues);
+
+    const headerRow = ws.getRow(1);
+    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    headerRow.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF4F81BD" }
+    };
+    headerRow.alignment = { vertical: "middle", horizontal: "center" };
+
+    const geoHeaderRow = ws.getRow(2);
+    geoHeaderRow.font = { bold: true };
+    geoHeaderRow.alignment = { vertical: "middle", horizontal: "center" };
+
+    ws.views = [{ state: "frozen", ySplit: 2 }];
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: ws.columnCount }
+    };
+  }
+
+  logger.info(
+    `excel rows BEFORE append (with headers): ${ws.rowCount}`
+  );
+
   const rowData = formatBusinessRow(biz);
-  const row = worksheet.addRow(rowData);
+  const row = ws.addRow(rowData);
   row.alignment = { wrapText: true, vertical: "top" };
 
-  await workbook.xlsx.writeFile(outputPath);
+  await localWorkbook.xlsx.writeFile(outputPath);
+  logger.info(
+    `excel rows AFTER append (with headers): ${ws.rowCount}`
+  );
 }
 
 export async function exportBusinessesToExcel(
